@@ -104,6 +104,59 @@ def new_session():
     return s
 
 
+LOG_FILE = None
+
+
+def debug_log(title, body):
+    """--debug 时把请求/响应追加写入 .debug/session-*.log，方便排查提交失败。"""
+    global LOG_FILE
+    if not DEBUG:
+        return
+    if LOG_FILE is None:
+        try:
+            os.makedirs('.debug', exist_ok=True)
+            LOG_FILE = os.path.join('.debug', time.strftime('session-%Y%m%d-%H%M%S.log'))
+            print(f'[debug] 日志文件: {LOG_FILE}')
+        except Exception:
+            LOG_FILE = ''
+    if not LOG_FILE:
+        return
+    try:
+        with open(LOG_FILE, 'a', encoding='utf-8') as fh:
+            fh.write(f'[{time.strftime("%H:%M:%S")}] {title}\n{body}\n{"-" * 70}\n')
+    except Exception:
+        pass
+
+
+def short(resp, limit=200):
+    """把响应压成一行短文本，便于在控制台/日志里查看。"""
+    text = getattr(resp, 'text', '') or ''
+    text = ' '.join(text.split())
+    return text[:limit] if text else '<空响应>'
+
+
+def is_ok(resp):
+    """服务器返回 ret==0 视为成功；兼容 {"ret":0} / {"ret": 0} / {"ret":"0"}。"""
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict) and 'ret' in payload:
+        try:
+            return int(payload['ret']) == 0
+        except (TypeError, ValueError):
+            return False
+    return '"ret":0' in (resp.text or '')
+
+
+def post_sco(conn, url, data, referer):
+    """提交 SCO 请求，并记录请求/响应（--debug）。"""
+    resp = conn.post(url, data=data, headers={'Referer': referer}, timeout=20)
+    debug_log(f'POST {url} action={data.get("action")}',
+              f'form={data}\nstatus={getattr(resp, "status_code", "?")}\nresp={short(resp, 800)}')
+    return resp
+
+
 # ============================================================
 # 输入解析（纯函数，方便单元测试）
 # ============================================================
@@ -447,6 +500,7 @@ def fetch_sco_leaves(cid_value, unit_index):
     response = request_with_retry(
         'get', url,
         headers={'Referer': f'{BASE}/student/course_info.aspx?cid={cid_value}'})
+    debug_log(f'GET {url}', f'status={response.status_code}\nresp={short(response, 1500)}')
     try:
         items = response.json().get('info')
     except Exception:
@@ -620,53 +674,51 @@ def build_cmi_data(crate, session_time='0', total_time='0'):
 def save_sco(conn, scoid, location, crate, session_time='0', total_time='0'):
     """两段式提交：方式1 setscoinfo；失败时用方式2 savescoinfo160928 兜底。
 
-    返回 (方式1 是否成功, 方式2 是否成功)。
+    返回 (方式1 是否成功, 方式2 是否成功, 失败原因)。
     """
     referer = f'{STUDY_PAGE}?cid={cid}&classid={classid}&sco={scoid}'
     url = f'{AJAX_SCO}?uid={uid}'
 
     try:
-        # 开始学习
-        conn.post(url, data={
+        post_sco(conn, url, {
             'action': 'startsco160928',
             'uid': uid, 'cid': cid, 'scoid': scoid,
             'classid': classid, 'tid': '-1',
-        }, headers={'Referer': referer}, timeout=20)
+        }, referer)
+    except Exception as exc:
+        return False, False, f'startsco160928 异常: {exc}'
 
-        # 方式1：把完整 CMI 数据交给服务器（含分数）
-        data = build_cmi_data(crate, session_time, total_time)
-        resp1 = conn.post(url, data={
+    # 方式1：把完整 CMI 数据交给服务器（含分数）
+    data = build_cmi_data(crate, session_time, total_time)
+    try:
+        resp1 = post_sco(conn, url, {
             'action': 'setscoinfo',
             'cid': cid, 'scoid': scoid, 'uid': uid,
             'data': data,
             'isend': 'False',
-        }, headers={'Referer': referer}, timeout=20)
+        }, referer)
     except Exception as exc:
-        print(f'[提交异常] {location}: {exc}')
-        return False, False
+        return False, False, f'setscoinfo 异常: {exc}'
 
-    way1_ok = '"ret":0' in resp1.text
-    if DEBUG:
-        print(f'\n[debug] setscoinfo {location} -> {resp1.text[:200]}')
+    way1_ok = is_ok(resp1)
+    if way1_ok:
+        return True, False, ''
 
-    way2_ok = False
-    if not way1_ok:
-        # 方式2：兜底接口，crate 使用用户设置的正确率（不再写死 100）
-        try:
-            resp2 = conn.post(url, data={
-                'action': 'savescoinfo160928',
-                'cid': cid, 'scoid': scoid, 'uid': uid,
-                'progress': '100', 'crate': str(crate),
-                'status': 'unknown', 'cstatus': 'completed', 'trycount': '0',
-            }, headers={'Referer': referer}, timeout=20)
-        except Exception as exc:
-            print(f'[提交异常] {location}: {exc}')
-            return False, False
-        way2_ok = '"ret":0' in resp2.text
-        if DEBUG:
-            print(f'[debug] savescoinfo160928 {location} -> {resp2.text[:200]}')
+    # 方式2：兜底接口，crate 使用用户设置的正确率（不再写死 100）
+    try:
+        resp2 = post_sco(conn, url, {
+            'action': 'savescoinfo160928',
+            'cid': cid, 'scoid': scoid, 'uid': uid,
+            'progress': '100', 'crate': str(crate),
+            'status': 'unknown', 'cstatus': 'completed', 'trycount': '0',
+        }, referer)
+    except Exception as exc:
+        return False, False, f'savescoinfo160928 异常: {exc}'
 
-    return way1_ok, way2_ok
+    if is_ok(resp2):
+        return False, True, ''
+
+    return False, False, f'setscoinfo→{short(resp1)}；savescoinfo→{short(resp2)}'
 
 
 # ============================================================
@@ -701,7 +753,7 @@ def startstudy(crate, x):
     conn = new_session()
 
     print(f'开始学习: {location}   目标正确率 {crate}%')
-    way1_ok, way2_ok = save_sco(conn, scoid, location, crate)
+    way1_ok, way2_ok, reason = save_sco(conn, scoid, location, crate)
 
     if way1_ok:
         way1Succeed.append(location)
@@ -712,6 +764,7 @@ def startstudy(crate, x):
     else:
         way1Failed.append(location)
         print(f'[ 提交失败 ]    {location}')
+        print(f'             服务器返回: {reason}')
 
 
 def startstudy_time(task_idx, statuses, target_time, x):
@@ -767,16 +820,20 @@ def startstudy_time(task_idx, statuses, target_time, x):
             time.sleep(2)
             break
 
-    way1_ok, way2_ok = save_sco(
+    way1_ok, way2_ok, reason = save_sco(
         conn, scoid, location, '100',
         session_time=session_time, total_time=total_time)
 
-    if way1_ok or way2_ok:
+    if way1_ok:
         statuses[task_idx]['status'] = '已完成'
         way1Succeed.append(location)
+    elif way2_ok:
+        statuses[task_idx]['status'] = '已完成'
+        way2Succeed.append(location)
     else:
         statuses[task_idx]['status'] = '失败'
         way1Failed.append(location)
+        debug_log(f'刷时长提交失败 {location}', reason)
 
 
 # ============================================================

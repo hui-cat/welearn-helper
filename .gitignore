@@ -5,3 +5,9 @@ build/
 dist/
 trace.log
 trace2.log
+
+.deps/
+run_local.bat
+.screens/
+.debug/
+.tmp-pip/
