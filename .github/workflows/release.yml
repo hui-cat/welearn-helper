@@ -1,0 +1,55 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build single-file exe
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller --onefile --console --noconfirm --name welearn welearn_decompiled.py
+
+      - name: Smoke test (start and quit)
+        shell: pwsh
+        run: |
+          "0" | & .\dist\welearn.exe
+          if ($LASTEXITCODE -ne 0) { throw "welearn.exe exited with $LASTEXITCODE" }
+          if (-not (Test-Path .\dist\welearn.exe)) { throw "missing dist/welearn.exe" }
+          (Get-Item .\dist\welearn.exe).Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: welearn-windows-x64
+          path: dist/welearn.exe
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/welearn.exe
+          generate_release_notes: true
+          draft: false
+          prerelease: false
