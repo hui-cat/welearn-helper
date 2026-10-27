@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 welearn 一体版 - WELearn 自动刷课 / 刷时长工具
 适配 2026 年新 SSO 登录系统
@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - 环境缺依赖时给出可操作提�
     print('缺少依赖 requests，请先执行：pip install requests')
     raise SystemExit(1)
 
-VERSION = 'v1.2.0'
+VERSION = 'v1.2.1'
 BASE = 'https://welearn.sflep.com'
 AJAX_SCO = BASE + '/Ajax/SCO.aspx'
 STUDY_PAGE = BASE + '/student/StudyCourse.aspx'
@@ -465,10 +465,11 @@ def load_courses():
 
 
 def load_units(course):
-    """取课程详情 + 单元列表，并刷新全局 uid / classid。失败抛 FetchError。"""
-    global uid, classid
+    """取课程详情 + 单元列表，并刷新全局 cid / uid / classid。失败抛 FetchError。"""
+    global uid, cid, classid
 
     cid_value = course['cid']
+    cid = cid_value
     course_url = f'{BASE}/student/course_info.aspx?cid={cid_value}'
     response = request_with_retry('get', course_url)
     text = response.text
@@ -678,6 +679,9 @@ def save_sco(conn, scoid, location, crate, session_time='0', total_time='0'):
     """
     referer = f'{STUDY_PAGE}?cid={cid}&classid={classid}&sco={scoid}'
     url = f'{AJAX_SCO}?uid={uid}'
+
+    if not cid or not uid:
+        return False, False, f'内部状态异常（cid={cid}, uid={uid}），请重新选择课程'
 
     try:
         post_sco(conn, url, {
@@ -942,6 +946,25 @@ def run_time_tasks(tasks):
     print()
 
 
+def report_recorded(cid_value, unit_indexes):
+    """提交后回读服务器记录，打印每个小节实际被写入的 crate 与完成状态。"""
+    print('\n服务器记录（crate 为 WE Learn 保存的正确率字段）：')
+    for unit_index in unit_indexes:
+        try:
+            items = fetch_sco_leaves(cid_value, unit_index)
+        except FetchError as exc:
+            print(f'  单元 {unit_index + 1} 回读失败: {exc}')
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get('isvisible', 'true')).lower() == 'false':
+                continue
+            name = item.get('location') or item.get('id')
+            print(f"  crate={str(item.get('crate', '?')):>4}  "
+                  f"{item.get('iscomplete', '?')}  {name}")
+
+
 def print_summary(mode):
     total_success = len(way1Succeed) + len(way2Succeed)
     total_failed = len(way1Failed) + len(way2Failed)
@@ -1009,6 +1032,7 @@ def run_session(mode):
                 run_course_tasks(tasks)
 
             print_summary(mode)
+            report_recorded(course['cid'], unit_indexes)
             back = ask('\n按回车返回主菜单，输入 q 退出程序: ')
             if back in ('q', 'Q', 'quit', 'exit'):
                 return 'quit'
