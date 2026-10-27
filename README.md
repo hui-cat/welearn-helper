@@ -107,6 +107,21 @@ v1.2.2 已修复：登录状态在进程内保持，主菜单会显示当前账�
 
 ## 更新日志
 
+### v1.2.3 (2026-10-27)
+
+**修复：非 UTF-8 控制台 / 输出被重定向时启动即崩溃**
+
+首次 GitHub Actions 构建时冒烟测试直接失败，日志是：
+
+```
+File "encodings\cp1252.py", line 19, in encode
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 14-23
+```
+
+Windows 默认代码页（cp1252 / cp437）或把输出重定向到管道时，打印中文 banner 就崩。
+现在启动时把 `stdout`/`stderr` 重新配置为 UTF-8（`errors='replace'`），
+真实控制台、CI 日志、管道输出都不会再触发编码异常。
+
 ### v1.2.2 (2026-10-27)
 
 **修复：完成一次任务回到主菜单后还要重新登录**

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 welearn 一体版 - WELearn 自动刷课 / 刷时长工具
 适配 2026 年新 SSO 登录系统
@@ -23,13 +23,26 @@ import time
 import traceback
 from threading import Thread
 
+
+def _enable_utf8_output():
+    """把标准输出/错误强制成 UTF-8，避免非 UTF-8 代码页（cp1252/cp437）
+    或输出被重定向（CI、管道）时打印中文直接抛 UnicodeEncodeError。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+
+
+_enable_utf8_output()
+
 try:
     from requests import Session
 except ImportError:  # pragma: no cover - 环境缺依赖时给出可操作提示
     print('缺少依赖 requests，请先执行：pip install requests')
     raise SystemExit(1)
 
-VERSION = 'v1.2.2'
+VERSION = 'v1.2.3'
 BASE = 'https://welearn.sflep.com'
 AJAX_SCO = BASE + '/Ajax/SCO.aspx'
 STUDY_PAGE = BASE + '/student/StudyCourse.aspx'
