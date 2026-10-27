@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - 环境缺依赖时给出可操作提�
     print('缺少依赖 requests，请先执行：pip install requests')
     raise SystemExit(1)
 
-VERSION = 'v1.2.1'
+VERSION = 'v1.2.2'
 BASE = 'https://welearn.sflep.com'
 AJAX_SCO = BASE + '/Ajax/SCO.aspx'
 STUDY_PAGE = BASE + '/student/StudyCourse.aspx'
@@ -54,6 +54,10 @@ session.headers.update({'User-Agent': UA})
 uid = None
 cid = None
 classid = None
+
+# 登录状态：回到主菜单后仍然有效，无需重复登录
+logged_in = False
+login_name = ''
 
 way1Succeed = []
 way2Succeed = []
@@ -368,6 +372,8 @@ def login_flow():
 
 def login_by_password():
     """账号密码登录；输入非法或登录失败返回 False，不退出程序。"""
+    global logged_in, login_name
+
     username = ask('请输入账号（输入 b 返回上一步）: ')
     if is_back(username):
         return False
@@ -392,12 +398,16 @@ def login_by_password():
         return False
 
     session.cookies.update(cookies)
+    logged_in = True
+    login_name = username
     print('登录成功!!\n')
     return True
 
 
 def login_by_cookie():
     """Cookie 登录；格式错误只提示，不退出程序，且不会清空已有登录状态。"""
+    global logged_in, login_name
+
     raw = ask('请粘贴 Cookie（输入 b 返回上一步）: ')
     if is_back(raw):
         return False
@@ -423,6 +433,8 @@ def login_by_cookie():
         return False
 
     print(f'Cookie 有效，共 {len(courses)} 门课程。\n')
+    logged_in = True
+    login_name = 'Cookie 登录'
     return True
 
 
@@ -513,23 +525,39 @@ def fetch_sco_leaves(cid_value, unit_index):
 # 菜单交互
 # ============================================================
 def choose_mode():
-    """选择模式；返回 '1' / '2'，用户选择退出返回 None。"""
+    """选择模式；返回 '1' / '2'，选 3 返回 'logout'，退出返回 None。"""
     while True:
+        if logged_in:
+            print(f'当前登录：{login_name}（已保持登录，无需重新输入）')
         print('请选择 Welearn 刷课模式:')
         print('   1. Welearn 课程刷取（完成度 + 正确率）')
         print('   2. Welearn 时长刷取')
+        if logged_in:
+            print('   3. 重新登录 / 切换账号')
         print('   0. 退出程序')
         print()
-        choice = ask('请输入数字 1、2 或 0: ')
+        choice = ask('请输入数字' + (' 1、2、3 或 0: ' if logged_in else ' 1、2 或 0: '))
         if choice in ('0', 'q', 'Q', 'quit', 'exit'):
             return None
         if choice in ('1', '2'):
             return choice
+        if choice == '3' and logged_in:
+            return 'logout'
         print('输入无效，请重新选择！\n')
+
+
+def do_logout():
+    """退出登录：清空登录状态与 Cookie，下次运行需要重新登录。"""
+    global logged_in, login_name
+    logged_in = False
+    login_name = ''
+    session.cookies.clear()
+    print('已退出登录，下次运行需要重新登录。\n')
 
 
 def select_course(mode):
     """列出课程并让用户选择；输入 b 抛 BackStep。"""
+    global logged_in
     try:
         courses = load_courses()
     except FetchError as exc:
@@ -537,7 +565,9 @@ def select_course(mode):
         raise BackStep
 
     if not courses:
-        print('没有取到任何课程，可能是登录失效或账号下没有课程。')
+        # 空列表通常意味着 Cookie 失效，标记为未登录，下次回到主菜单会要求重新登录
+        logged_in = False
+        print('没有取到任何课程，可能是登录已失效或账号下没有课程。')
         raise BackStep
 
     print('我的课程：\n')
@@ -982,10 +1012,14 @@ def print_summary(mode):
 # ============================================================
 def run_session(mode):
     """登录 → 选课 → 选单元 → 设参数 → 执行。任何一步选择“返回”都只回退一步。"""
+    global logged_in
+
     for bucket in (way1Succeed, way2Succeed, way1Failed, way2Failed):
         bucket.clear()
 
-    login_flow()                       # 登录（输入错误/登录失败都不退出程序）
+    if not logged_in:
+        login_flow()                   # 登录（输入错误/登录失败都不退出程序）
+        logged_in = True               # login_by_* 成功才会返回，这里兜底
 
     while True:                        # 课程层
         course = select_course(mode)   # 输入 b -> BackStep -> 回主菜单
@@ -1063,6 +1097,10 @@ def main():
         if mode is None:
             print('已退出。')
             return
+
+        if mode == 'logout':
+            do_logout()
+            continue
 
         clear_screen()
         try:
